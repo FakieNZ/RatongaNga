@@ -12,6 +12,8 @@ function getDuplicates(tablename,val) {
     aggregateQuery.groupBy(val);
     aggregateQuery.addHaving('COUNT', '>', 1);
     aggregateQuery.query();
+    
+    gs.print(aggregateQuery.getRowCount());
 
     while (aggregateQuery.next()) {
         duplicateRecords.push(aggregateQuery[val].toString());  
