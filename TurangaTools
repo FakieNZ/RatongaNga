@@ -1,0 +1,201 @@
+var TurangaTools = Class.create();
+TurangaTools.prototype = {
+  initialize: function() {
+  },
+  
+  mergeUserRecords: function(table, move_from_id, move_to_id, save_changes) {
+    if(move_from_id == move_to_id){
+      gs.info("The ID's are the same: " + move_from_id);
+      return;
+    }
+
+    if(move_from_id.length != 32 || move_to_id.length != 32){
+      gs.info("One of the inputs is not a SYS_ID/GUID");
+      return;
+    }
+
+    var refTable = new TableUtils(table).getTables();
+    gs.include('j2js');
+    refTable = j2js(refTable).join();
+
+    
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //Dictionaries
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //Query dictionary table for reference, document_id, and condition fields
+    var dict = new GlideRecord('sys_dictionary');
+    dict.addEncodedQuery('referenceIN' + refTable).addOrCondition('internal_type', 'document_id').addOrCondition('internal_type', 'conditions');
+    //Do not query audit and log fields
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'var__m_');
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'ecc_');
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'ha_');
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'syslog');
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'sys_history');
+    dict.addQuery('name', 'DOES NOT CONTAIN', '_log');
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'text_search');
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'ts_');
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'sys_watermark');
+    dict.addQuery('name', 'DOES NOT CONTAIN', 'sys_audit');
+    dict.orderBy('name');
+    dict.orderBy('element');
+    dict.query();
+    
+    while(dict.next()){
+      var table_name = dict.name;
+      var field_name = dict.element;
+      // Skip tables used for Table Rotation
+      var table_rotation_gr = new GlideRecord("sys_table_rotation_schedule");
+      table_rotation_gr.addQuery("name.name", '!=', table_name);
+      table_rotation_gr.addQuery("table_name", table_name);
+      table_rotation_gr.query();
+      if(!table_rotation_gr.hasNext()){
+
+        var reference_type = dict.internal_type;
+
+        // Look up the Table Scope
+        var table_gr = new GlideRecord("sys_db_object");
+        table_gr.addQuery("name", table_name);
+        table_gr.addQuery("scriptable_table", false);
+        table_gr.query();
+        if(table_gr.next()){
+
+          // Change to the scope of the table
+          gs.setCurrentApplicationId(table_gr.sys_scope);
+
+          //Query each table for matching records
+          var related_record_gr = new GlideRecord(table_name);
+          if(reference_type == 'glide_list' || reference_type == 'conditions'){
+            related_record_gr.addQuery(field_name, 'CONTAINS', move_from_id);
+          } else{
+            related_record_gr.addQuery(field_name, move_from_id);
+          }
+          related_record_gr.query();
+          while(related_record_gr.next()){
+            // Do a replace so we support all field types including lists and conditions
+            var old_record_value = related_record_gr.getValue(field_name);
+            var new_record_value = old_record_value.replace(move_from_id, move_to_id);
+            related_record_gr.setValue(field_name, new_record_value);
+            //gs.info("field_name - " + field_name);
+            //gs.info("field_name Value - " + related_record_gr.getValue(field_name));
+            //gs.info("move_from_id - " + move_from_id);
+            //gs.info("move_to_id - " + move_to_id);
+            //gs.info("old_record_value - " + old_record_value);
+            //gs.info("new_record_value - " + new_record_value); 
+            related_record_gr.setValue(field_name, new_record_value);
+            //Silent update
+            related_record_gr.setWorkfow(false);
+            related_record_gr.autoSysFields(false);
+            if(save_changes){
+              related_record_gr.update();
+            }
+          }
+          var record_count = related_record_gr.getRowCount();
+          if(record_count > 0){
+            var record_message = ' records found';
+            if(record_count == 1){
+              record_message = ' record found';
+            }
+            gs.info(record_count + record_message + " in " + table_name + "." + field_name);
+          }
+        }
+      }
+    }
+
+
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Catalog Variables
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Change back to global scope
+    gs.setCurrentApplicationId("global");
+    // Process Catalog Variable References
+    var catalog_var_gr = new GlideRecord('sc_item_option');
+    catalog_var_gr.addQuery('value', 'CONTAINS', move_from_id);
+    catalog_var_gr.query();
+    while(catalog_var_gr.next()){
+      // Do a replace so we support all field types including lists and conditions
+      var old_var_value = catalog_var_gr.getValue(field_name);
+      var new_var_value = old_var_value.replace(move_from_id, move_to_id);
+      catalog_var_gr.setValue(field_name, new_var_value);
+      //Silent update
+      catalog_var_gr.setWorkfow(false);
+      catalog_var_gr.autoSysFields(false);
+      if(save_changes){
+        catalog_var_gr.update();
+      }
+    }
+    var variables_count = catalog_var_gr.getRowCount();
+    var variables_message = ' catalog variables found';
+    if(variables_count == 1){
+      variables_message = ' catalog variable found';
+    }
+    gs.info(variables_count + variables_message);
+
+
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Workflow Variables
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //Query for workflow variable values
+    var_value_table_name = 'sys_variable_value';
+    var var_value_gr = new GlideRecord(var_value_table_name);
+    var_value_gr.addQuery('value', 'CONTAINS', move_from_id);
+    var_value_gr.query();
+    while(var_value_gr.next()){
+      // Do a replace so we support all field types including lists and conditions
+      var old_wf_value = var_value_gr.getValue("value");
+      var new_wf_value = old_wf_value.replace(move_from_id, move_to_id);
+      var_value_gr.setValue("value", new_wf_value);
+      //Silent update
+      var_value_gr.setWorkfow(false);
+      var_value_gr.autoSysFields(false);
+      if(save_changes){
+        var_value_gr.update();
+      }
+    }
+    var wf_variables_count = var_value_gr.getRowCount();
+    var wf_variables_message = ' workflow variables found';
+    if(wf_variables_count == 1){
+      wf_variables_message = ' workflow variable found';
+    }
+    gs.info(wf_variables_count + wf_variables_message); 
+
+
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Attachments
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //Query for attachments
+    attachment_table_name = 'sys_attachment';
+    var attachment_gr = new GlideRecord(attachment_table_name);
+    attachment_gr.addQuery('table_sys_id', move_from_id);
+    attachment_gr.query();
+    while(attachment_gr.next()){
+      // Do a replace so we support all field types including lists and conditions
+      var old_attachment_value = attachment_gr.getValue('table_sys_id');
+      var new_attachment_value = old_attachment_value.replace(move_from_id, move_to_id);
+      attachment_gr.setValue('table_sys_id', new_attachment_value);
+      //Silent update
+      attachment_gr.setWorkfow(false);
+      attachment_gr.autoSysFields(false);
+      if(save_changes){
+        attachment_gr.update();
+      }
+    }
+    var attachment_count = attachment_gr.getRowCount();
+    var attachment_message = ' attachments found';
+    if(attachment_count == 1){
+      attachment_message = ' attachment found';
+    }
+    gs.info(attachment_count + attachment_message); 
+
+
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Delete old record
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    var old_gr = new GlideRecord(table);
+    if(old_gr.get(move_from_id)){
+      gs.info("Deleting old record: " + table + " - " + old_gr.getDisplayValue() + " (" + old_gr.sys_id + ")");
+      if(save_changes){
+        old_gr.deleteRecord();
+      }
+    }
+  }
+}
